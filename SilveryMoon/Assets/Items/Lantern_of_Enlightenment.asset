@@ -18,8 +18,9 @@ MonoBehaviour:
   category: 1
   stackable: 0
   maxStack: 1
+  worldPrefab: {fileID: 0}
   restorativeType: 0
   healValue: 0
-  fuelEfficiency: 100
+  fuelEfficiency: 50
   brightnessValue: 100
   totemEffectTag: 

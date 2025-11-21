@@ -1,6 +1,35 @@
 {
-    "version": 0,
+    "version": 1,
     "name": "PlayerControls",
-    "maps": [],
+    "maps": [
+        {
+            "name": "Gameplay",
+            "id": "f1599fb6-3a43-4966-95fb-f623095828c2",
+            "actions": [
+                {
+                    "name": "ToggleInventory",
+                    "type": "Button",
+                    "id": "b7ae1d24-9b60-4307-aa1d-d26e066bf771",
+                    "expectedControlType": "",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": true
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "",
+                    "id": "2d8fd881-4c64-403e-a1da-684abb268356",
+                    "path": "<Keyboard>/tab",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "ToggleInventory",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                }
+            ]
+        }
+    ],
     "controlSchemes": []
 }

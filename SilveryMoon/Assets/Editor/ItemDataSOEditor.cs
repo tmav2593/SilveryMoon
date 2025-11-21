@@ -1,9 +1,14 @@
-// Place in Assets/Editor/ItemDataSOEditor.cs
 #if UNITY_EDITOR
 using UnityEngine;
 using UnityEditor;
 using InventorySystem;
 
+/// <summary>
+/// Custom inspector for ItemDataSO:
+/// - Shows only the fields relevant to the selected category.
+/// - When the category is changed, clears the now-irrelevant fields to avoid confusion.
+/// - Exposes worldPrefab so you can link a prefab for pickups/equipping.
+/// </summary>
 [CustomEditor(typeof(ItemDataSO))]
 public class ItemDataSOEditor : Editor
 {
@@ -13,6 +18,7 @@ public class ItemDataSOEditor : Editor
     SerializedProperty categoryProp;
     SerializedProperty stackableProp;
     SerializedProperty maxStackProp;
+    SerializedProperty worldPrefabProp;
 
     SerializedProperty restorativeTypeProp;
     SerializedProperty healValueProp;
@@ -30,6 +36,7 @@ public class ItemDataSOEditor : Editor
         categoryProp = serializedObject.FindProperty("category");
         stackableProp = serializedObject.FindProperty("stackable");
         maxStackProp = serializedObject.FindProperty("maxStack");
+        worldPrefabProp = serializedObject.FindProperty("worldPrefab");
 
         restorativeTypeProp = serializedObject.FindProperty("restorativeType");
         healValueProp = serializedObject.FindProperty("healValue");
@@ -48,6 +55,9 @@ public class ItemDataSOEditor : Editor
         EditorGUILayout.PropertyField(itemNameProp);
         EditorGUILayout.PropertyField(iconProp);
         EditorGUILayout.PropertyField(descriptionProp);
+
+        // World prefab (always useful)
+        EditorGUILayout.PropertyField(worldPrefabProp, new GUIContent("World Prefab", "Prefab used for world pickup or equipped world object (optional)."));
 
         // Category selector — detect changes so we can clear irrelevant data
         EditorGUI.BeginChangeCheck();

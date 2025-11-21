@@ -14,6 +14,10 @@ public class ItemDataSO : ScriptableObject
     public bool stackable = true;
     public int maxStack = 99;
 
+    [Header("World prefab (optional)")]
+    [Tooltip("Optional prefab used for this item in the world (pickup or equipped world object).")]
+    public GameObject worldPrefab;
+
     [Header("Restorative (if category == Restorative)")]
     public RestorativeType restorativeType;
     public int healValue;
@@ -27,7 +31,7 @@ public class ItemDataSO : ScriptableObject
 
     public string GetSummary()
     {
-        if (category == ItemCategory.Restorative || category == ItemCategory.Restorative) // fallback naming if needed
+        if (category == ItemCategory.Restorative)
             return $"{itemName} ({restorativeType}) heals {healValue}";
         if (category == ItemCategory.LightEquipment)
             return $"{itemName} (Light) brightness {brightnessValue}, efficiency {fuelEfficiency}";

@@ -7,6 +7,7 @@ using InventorySystem;
 /// Example player stats that restorative items affect.
 /// - Light/fuel behaviour is intentionally NOT handled here: the equipped lantern / light object is responsible for its own fuel, brightness and drain.
 /// - PlayerStats only tracks Health and Hunger and exposes events for UI/other systems.
+/// - When a lantern is equipped via EquipLantern(ItemDataSO), PlayerStats now raises an event so a world-object manager can spawn/attach the actual lantern prefab.
 /// </summary>
 public class PlayerStats : MonoBehaviour
 {
@@ -26,6 +27,9 @@ public class PlayerStats : MonoBehaviour
     // Events (C# events for code; UnityEvents for inspector wiring)
     public event Action<int, int> OnHealthChanged; // (newValue, delta)
     public event Action<int, int> OnHungerChanged; // (newValue, delta)
+
+    // New event: invoked when a lantern item is equipped. Subscribers (e.g. a LightEquipmentManager) should spawn/attach the lantern GameObject.
+    public event Action<ItemDataSO> OnLanternEquipped;
 
     [Serializable] public class IntEvent : UnityEvent<int> { }
     public IntEvent onHealthChangedUnity;
@@ -86,7 +90,7 @@ public class PlayerStats : MonoBehaviour
 
     /// <summary>
     /// Equip a lantern ItemDataSO. The lantern object itself should handle light/fuel behaviour.
-    /// This method just assigns the reference and can be used to notify other systems.
+    /// This method assigns the reference and raises OnLanternEquipped so a LightEquipmentManager can spawn/attach the world object.
     /// </summary>
     public void EquipLantern(ItemDataSO lantern)
     {
@@ -98,6 +102,9 @@ public class PlayerStats : MonoBehaviour
 
         equippedLantern = lantern;
         Debug.Log($"Equipped lantern (reference only): {lantern.itemName}. Lantern object should manage fuel/brightness.");
+
+        // Notify listeners (e.g., LightEquipmentManager) to spawn/attach a lantern object in the world
+        OnLanternEquipped?.Invoke(lantern);
     }
 
     /// <summary>

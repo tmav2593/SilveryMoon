@@ -3,20 +3,16 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+using UnityEngine.InputSystem;
 
 /// <summary>
-/// Inventory UI manager with paging support.
+/// Inventory UI manager with paging support and open/close toggling.
 /// - Shows only `slotsPerPage` slots at a time and lets player flip pages to view the rest.
-/// - Each visible slot maps to a global slot index in the inventory (0..capacity-1).
-/// - If a global index is < inventory.items.Count the slot shows an item, otherwise it's empty.
-/// - Details panel is always visible. When nothing is selected it shows "None" for name/description and blanks the icon.
-/// Setup:
-///  - Assign inventory (your Inventory component).
-///  - Assign slotPrefab (prefab with InventorySlotUI).
-///  - Assign gridParent (Transform with GridLayoutGroup).
-///  - Configure slotsPerPage to how many icons you want per page (e.g., 12).
-///  - Assign prevPageButton/nextPageButton and pageNumberText to navigate pages.
-///  - Hook details UI as before (detailsIcon, detailsName, detailsDescription, useButton).
+/// - Details panel always visible. When nothing is selected it shows "None" for name/description and blanks the icon.
+/// - You can toggle the inventory with the configured input (new Input System InputActionReference) or fallback toggleKey.
+/// - On close, if the selected item is LightEquipment it will be equipped on the player (via PlayerStats/LightEquipmentManager).
+/// - Also exposes an explicit Equip button in the details panel.
+/// - New: HUD-like sliders for HP, Hunger and currently equipped lantern fuel are exposed here while the inventory is open.
 /// </summary>
 [RequireComponent(typeof(CanvasGroup))]
 public class InventoryUI : MonoBehaviour
@@ -42,11 +38,71 @@ public class InventoryUI : MonoBehaviour
     public TMP_Text detailsName;
     public TMP_Text detailsDescription;
     public Button useButton;
+    public Button equipButton; // explicit equip button
 
+    [Header("Open/Close")]
+    [Tooltip("Optional InputActionReference (new Input System) for toggling the inventory UI (e.g. map to 'I' or gamepad menu). If null, fallback to toggleKey.")]
+    public InputActionReference toggleAction;
+    [Tooltip("Fallback keyboard key to toggle inventory if toggleAction is not assigned.")]
+    public KeyCode toggleKey = KeyCode.I;
+    public GameObject uiRoot; // top-level UI object to enable/disable (defaults to this.gameObject)
+
+    [Header("PlayerInput (optional)")]
+    public PlayerInput playerInput;
+
+    [Header("HUD Sliders (inside Inventory UI)")]
+    [Tooltip("Slider and optional text for Health (normalized 0..1, and numeric text).")]
+    public Slider hpSlider;
+    public TMP_Text hpText;
+    [Tooltip("Slider and optional text for Hunger.")]
+    public Slider hungerSlider;
+    public TMP_Text hungerText;
+
+    [Header("Equipped Lantern display (inside Inventory UI)")]
+    [Tooltip("Slider and text for currently equipped lantern fuel. Hidden when no lantern is equipped.")]
+    public Slider lanternFuelSlider;
+    public TMP_Text lanternFuelText;
+    [Tooltip("Single image used to represent lantern ON/OFF inside the inventory UI.")]
+    public Image lanternStateIcon;
+    public Sprite lanternOnSprite;
+    public Sprite lanternOffSprite;
+
+    [Header("Light manager (optional)")]
+    [Tooltip("If not assigned, InventoryUI will try to find a LightEquipmentManager on the player.")]
+    public LightEquipmentManager lightManager;
+
+    // internals
     List<InventorySlotUI> slotUIs = new List<InventorySlotUI>();
     int currentPage = 0; // zero-based
     int totalPages = 1;
     int selectedGlobalIndex = -1;
+    bool isOpen = false;
+
+    // currently subscribed lantern controller (for fuel updates)
+    LanternController subscribedLantern;
+
+    void Awake()
+    {
+        if (uiRoot == null) uiRoot = this.gameObject;
+    }
+
+    void OnEnable()
+    {
+        if (toggleAction != null && toggleAction.action != null)
+            toggleAction.action.performed += OnTogglePerformed;
+
+        if (playerInput != null)
+            playerInput.actions["ToggleInventory"].performed += OnTogglePerformed;
+    }
+
+    void OnDisable()
+    {
+        if (toggleAction != null && toggleAction.action != null)
+            toggleAction.action.performed -= OnTogglePerformed;
+
+        if (playerInput != null)
+            playerInput.actions["ToggleInventory"].performed -= OnTogglePerformed;
+    }
 
     void Start()
     {
@@ -81,6 +137,9 @@ public class InventoryUI : MonoBehaviour
         if (useButton != null)
             useButton.onClick.AddListener(OnUseButtonPressed);
 
+        if (equipButton != null)
+            equipButton.onClick.AddListener(OnEquipButtonPressed);
+
         // Ensure details panel is visible and shows the "none" state initially
         if (detailsPanel != null) detailsPanel.SetActive(true);
         ShowNoneDetails();
@@ -88,14 +147,98 @@ public class InventoryUI : MonoBehaviour
         // initial refresh
         SetPage(0);
         RefreshUI();
+
+        // start closed by default
+        CloseInventory();
+
+        // wire up playerStats events for health/hunger UI
+        if (playerStats == null)
+            playerStats = FindObjectOfType<PlayerStats>();
+
+        if (playerStats != null)
+        {
+            playerStats.OnHealthChanged += OnHealthChanged;
+            playerStats.OnHungerChanged += OnHungerChanged;
+
+            // initialize sliders immediately
+            UpdateHealthUIImmediate();
+            UpdateHungerUIImmediate();
+        }
+
+        // find / subscribe to LightEquipmentManager
+        if (lightManager == null)
+        {
+            if (playerStats != null)
+                lightManager = playerStats.GetComponent<LightEquipmentManager>();
+
+            if (lightManager == null)
+                lightManager = FindObjectOfType<LightEquipmentManager>();
+        }
+
+        if (lightManager != null)
+        {
+            lightManager.OnLanternEquippedEvent += OnLanternEquipped;
+            lightManager.OnLanternUnequippedEvent += OnLanternUnequipped;
+
+            // If a lantern is already equipped at startup, subscribe to it
+            var existing = lightManager.CurrentLantern;
+            if (existing != null)
+                SubscribeToLantern(existing);
+            else
+                UpdateLanternDisplayNone();
+        }
+        else
+        {
+            UpdateLanternDisplayNone();
+        }
+
+        // Ensure lantern UI hidden initially if no lantern
+        if (lanternFuelSlider != null) lanternFuelSlider.gameObject.SetActive(subscribedLantern != null);
+        if (lanternFuelText != null) lanternFuelText.gameObject.SetActive(subscribedLantern != null);
+        if (lanternStateIcon != null) lanternStateIcon.gameObject.SetActive(subscribedLantern != null);
     }
 
     void OnDestroy()
     {
+        // cleanup subscriptions
         if (inventory != null) inventory.OnInventoryChanged -= RefreshUI;
-        if (prevPageButton != null) prevPageButton.onClick.RemoveListener(PrevPage);
-        if (nextPageButton != null) nextPageButton.onClick.RemoveListener(NextPage);
-        if (useButton != null) useButton.onClick.RemoveListener(OnUseButtonPressed);
+        if (playerStats != null)
+        {
+            playerStats.OnHealthChanged -= OnHealthChanged;
+            playerStats.OnHungerChanged -= OnHungerChanged;
+        }
+
+        if (lightManager != null)
+        {
+            lightManager.OnLanternEquippedEvent -= OnLanternEquipped;
+            lightManager.OnLanternUnequippedEvent -= OnLanternUnequipped;
+        }
+
+        UnsubscribeFromLantern();
+    }
+
+    void Update()
+    {
+        // fallback toggle with keyboard if no InputAction provided
+        if (toggleAction == null || toggleAction.action == null)
+        {
+            if (Keyboard.current != null)
+            {
+                // if using new input system but no action provided, also allow KeyCode fallback
+                if (Input.GetKeyDown(toggleKey))
+                    ToggleInventory();
+            }
+            else
+            {
+                if (Input.GetKeyDown(toggleKey))
+                    ToggleInventory();
+            }
+        }
+    }
+
+    void OnTogglePerformed(InputAction.CallbackContext ctx)
+    {
+        ToggleInventory();
     }
 
     void InitializeSlots()
@@ -166,6 +309,10 @@ public class InventoryUI : MonoBehaviour
         }
 
         UpdatePagingControls();
+
+        // Refresh HP/Hunger display even if unchanged (useful when opening)
+        UpdateHealthUIImmediate();
+        UpdateHungerUIImmediate();
     }
 
     void UpdatePagingControls()
@@ -229,6 +376,9 @@ public class InventoryUI : MonoBehaviour
 
         if (useButton != null)
             useButton.interactable = true;
+
+        if (equipButton != null)
+            equipButton.interactable = slot.item != null && slot.item.category == InventorySystem.ItemCategory.LightEquipment;
     }
 
     void ShowNoneDetails()
@@ -246,6 +396,9 @@ public class InventoryUI : MonoBehaviour
 
         if (useButton != null)
             useButton.interactable = false;
+
+        if (equipButton != null)
+            equipButton.interactable = false;
     }
 
     void OnUseButtonPressed()
@@ -266,6 +419,235 @@ public class InventoryUI : MonoBehaviour
                 ShowNoneDetails();
         }
     }
+
+    void OnEquipButtonPressed()
+    {
+        if (selectedGlobalIndex < 0 || selectedGlobalIndex >= inventory.items.Count) return;
+
+        var slot = inventory.items[selectedGlobalIndex];
+        if (slot == null || slot.item == null) return;
+
+        TryEquipItem(slot.item);
+    }
+
+    /// <summary>
+    /// Try to equip the provided item (LightEquipment). Does NOT remove it from inventory.
+    /// Delegates to PlayerStats.EquipLantern which fires OnLanternEquipped to spawn the world object.
+    /// </summary>
+    bool TryEquipItem(ItemDataSO item)
+    {
+        if (item == null) return false;
+        if (playerStats == null)
+        {
+            playerStats = FindObjectOfType<PlayerStats>();
+            if (playerStats == null)
+            {
+                Debug.LogWarning("InventoryUI: No PlayerStats available to equip item.");
+                return false;
+            }
+        }
+
+        if (item.category != InventorySystem.ItemCategory.LightEquipment)
+        {
+            Debug.LogWarning($"InventoryUI: Item '{item.itemName}' is not equippable light equipment.");
+            return false;
+        }
+
+        playerStats.EquipLantern(item);
+        Debug.Log($"InventoryUI: Equipped item '{item.itemName}' via PlayerStats.EquipLantern.");
+        return true;
+    }
+
+    #region Health / Hunger UI handlers
+
+    void OnHealthChanged(int newValue, int delta)
+    {
+        UpdateHealthUIImmediate();
+    }
+
+    void OnHungerChanged(int newValue, int delta)
+    {
+        UpdateHungerUIImmediate();
+    }
+
+    void UpdateHealthUIImmediate()
+    {
+        if (playerStats == null) return;
+        float n = playerStats.NormalizedHealth();
+        if (hpSlider != null)
+        {
+            hpSlider.value = Mathf.Clamp01(n);
+            hpSlider.gameObject.SetActive(true);
+        }
+        if (hpText != null)
+            hpText.text = $"{playerStats.Health} / {playerStats.MaxHealth}";
+    }
+
+    void UpdateHungerUIImmediate()
+    {
+        if (playerStats == null) return;
+        float n = playerStats.NormalizedHunger();
+        if (hungerSlider != null)
+        {
+            hungerSlider.value = Mathf.Clamp01(n);
+            hungerSlider.gameObject.SetActive(true);
+        }
+        if (hungerText != null)
+            hungerText.text = $"{playerStats.Hunger} / {playerStats.MaxHunger}";
+    }
+
+    #endregion
+
+    #region Lantern subscription & UI
+
+    void OnLanternEquipped(LanternController lantern)
+    {
+        SubscribeToLantern(lantern);
+    }
+
+    void OnLanternUnequipped()
+    {
+        UnsubscribeFromLantern();
+        UpdateLanternDisplayNone();
+    }
+
+    void SubscribeToLantern(LanternController lantern)
+    {
+        UnsubscribeFromLantern();
+
+        subscribedLantern = lantern;
+        if (subscribedLantern == null)
+        {
+            UpdateLanternDisplayNone();
+            return;
+        }
+
+        // show lantern UI
+        if (lanternFuelSlider != null) lanternFuelSlider.gameObject.SetActive(true);
+        if (lanternFuelText != null) lanternFuelText.gameObject.SetActive(true);
+        if (lanternStateIcon != null) lanternStateIcon.gameObject.SetActive(true);
+
+        // initialize
+        UpdateLanternFuelDisplay(subscribedLantern.GetCurrentFuel(), subscribedLantern.maxFuel);
+        UpdateLanternStateDisplay(subscribedLantern.IsLit);
+
+        // subscribe events
+        subscribedLantern.OnFuelChanged += OnLanternFuelChanged;
+        subscribedLantern.OnLitStateChanged += OnLanternLitStateChanged;
+        subscribedLantern.OnFuelDepletedEvent += OnLanternFuelDepleted;
+    }
+
+    void UnsubscribeFromLantern()
+    {
+        if (subscribedLantern != null)
+        {
+            subscribedLantern.OnFuelChanged -= OnLanternFuelChanged;
+            subscribedLantern.OnLitStateChanged -= OnLanternLitStateChanged;
+            subscribedLantern.OnFuelDepletedEvent -= OnLanternFuelDepleted;
+            subscribedLantern = null;
+        }
+    }
+
+    void OnLanternFuelChanged(int current, int max)
+    {
+        UpdateLanternFuelDisplay(current, max);
+    }
+
+    void OnLanternLitStateChanged(bool isLit)
+    {
+        UpdateLanternStateDisplay(isLit);
+    }
+
+    void OnLanternFuelDepleted()
+    {
+        UpdateLanternFuelDisplay(0, subscribedLantern != null ? subscribedLantern.maxFuel : 0);
+        UpdateLanternStateDisplay(false);
+    }
+
+    void UpdateLanternFuelDisplay(int current, int max)
+    {
+        if (lanternFuelSlider != null)
+        {
+            float n = (max > 0) ? (float)current / max : 0f;
+            lanternFuelSlider.value = Mathf.Clamp01(n);
+            lanternFuelSlider.gameObject.SetActive(max > 0);
+        }
+        if (lanternFuelText != null)
+        {
+            lanternFuelText.text = $"{current} / {max}";
+            lanternFuelText.gameObject.SetActive(max > 0);
+        }
+    }
+
+    void UpdateLanternStateDisplay(bool isLit)
+    {
+        if (lanternStateIcon == null) return;
+
+        if (isLit && lanternOnSprite != null)
+        {
+            lanternStateIcon.sprite = lanternOnSprite;
+            lanternStateIcon.enabled = true;
+        }
+        else if (!isLit && lanternOffSprite != null)
+        {
+            lanternStateIcon.sprite = lanternOffSprite;
+            lanternStateIcon.enabled = true;
+        }
+        else
+        {
+            lanternStateIcon.sprite = null;
+            lanternStateIcon.enabled = false;
+        }
+    }
+
+    void UpdateLanternDisplayNone()
+    {
+        if (lanternFuelSlider != null) lanternFuelSlider.gameObject.SetActive(false);
+        if (lanternFuelText != null) lanternFuelText.gameObject.SetActive(false);
+        if (lanternStateIcon != null) lanternStateIcon.gameObject.SetActive(false);
+    }
+
+    #endregion
+
+    #region Open / Close / Toggle
+
+    public void ToggleInventory()
+    {
+        if (isOpen) CloseInventory();
+        else OpenInventory();
+    }
+
+    public void OpenInventory()
+    {
+        isOpen = true;
+        if (uiRoot != null) uiRoot.SetActive(true);
+
+        // refresh contents every time we open
+        RefreshUI();
+
+        // Optionally lock player controls here by disabling your player controller component(s).
+        // If you want that behavior, assign playerStats.gameObject or specific controller and disable it here.
+    }
+
+    public void CloseInventory()
+    {
+        // On close we optionally equip the selected LightEquipment item automatically
+        if (selectedGlobalIndex >= 0 && selectedGlobalIndex < inventory.items.Count)
+        {
+            var slot = inventory.items[selectedGlobalIndex];
+            if (slot != null && slot.item != null && slot.item.category == InventorySystem.ItemCategory.LightEquipment)
+            {
+                TryEquipItem(slot.item);
+            }
+        }
+
+        isOpen = false;
+        if (uiRoot != null) uiRoot.SetActive(false);
+
+        // Optionally re-enable player controls here if you disabled them on OpenInventory()
+    }
+
+    #endregion
 
     public void NextPage()
     {
