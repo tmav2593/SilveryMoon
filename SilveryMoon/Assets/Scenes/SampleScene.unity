@@ -4809,6 +4809,8 @@ MonoBehaviour:
     count: 1
   - item: {fileID: 11400000, guid: dce01a4a07bd6004a9ae96d28c4db011, type: 2}
     count: 5
+  - item: {fileID: 11400000, guid: 794dc1284623fde42a2e74d7cab26dad, type: 2}
+    count: 5
 --- !u!114 &1029411679
 MonoBehaviour:
   m_ObjectHideFlags: 0
